@@ -8,16 +8,25 @@ pub struct Material {
     pub specular: f32,
     pub transparency: f32,
     pub reflectivity: f32,
+    pub ior: f32,
 }
 
 impl Material {
-    pub fn new(diffuse: Color, albedo: f32, specular: f32, transparency: f32, reflectivity: f32) -> Self {
+    pub fn new(
+        diffuse: Color,
+        albedo: f32,
+        specular: f32,
+        transparency: f32,
+        reflectivity: f32,
+        ior: f32,
+    ) -> Self {
         Material {
             diffuse,
             albedo,
             specular,
             transparency,
             reflectivity,
+            ior,
         }
     }
 }
