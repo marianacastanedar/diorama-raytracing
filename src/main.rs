@@ -30,6 +30,8 @@ const FOV: f32 = PI / 3.0;
 const ORBIT_SPEED: f32 = 1.6; // rad/seg
 const ZOOM_SPEED: f32 = 6.0; // unidades/seg
 const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
+const PREVIEW_SAMPLES: u32 = 1; // mientras se mueve la cámara: 1 rayo/pixel
+const FINAL_SAMPLES: u32 = 2; // en reposo: supersampling 2x2 para antialiasing
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     let water = materials::water();
@@ -43,6 +45,48 @@ fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     objects
 }
 
+/// Traza un pixel con supersampling `samples`x`samples` (1 = un solo rayo
+/// por el centro del pixel, sin antialiasing).
+fn sample_pixel(
+    x: usize,
+    y: usize,
+    samples: u32,
+    aspect_ratio: f32,
+    tan_fov: f32,
+    camera: &Camera,
+    objects: &[Box<dyn RayIntersect>],
+    light: &Light,
+    skybox: &Skybox,
+) -> u32 {
+    let mut r_sum = 0.0;
+    let mut g_sum = 0.0;
+    let mut b_sum = 0.0;
+
+    for sy in 0..samples {
+        for sx in 0..samples {
+            let px = x as f32 + (sx as f32 + 0.5) / samples as f32;
+            let py = y as f32 + (sy as f32 + 0.5) / samples as f32;
+
+            let screen_x = (2.0 * px / WIDTH as f32 - 1.0) * aspect_ratio * tan_fov;
+            let screen_y = (1.0 - 2.0 * py / HEIGHT as f32) * tan_fov;
+
+            let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
+            let hex = cast_ray(&camera.eye, &ray_direction, objects, light, skybox).to_hex();
+
+            r_sum += ((hex >> 16) & 0xFF) as f32;
+            g_sum += ((hex >> 8) & 0xFF) as f32;
+            b_sum += (hex & 0xFF) as f32;
+        }
+    }
+
+    let count = (samples * samples) as f32;
+    let r = (r_sum / count) as u32;
+    let g = (g_sum / count) as u32;
+    let b = (b_sum / count) as u32;
+
+    (r << 16) | (g << 8) | b
+}
+
 /// Traza la escena y llena el framebuffer, repartiendo filas entre los
 /// núcleos disponibles: en single-thread cada frame tarda ~200ms, suficiente
 /// para que mover la cámara se sienta trabado.
@@ -52,6 +96,7 @@ fn render(
     objects: &[Box<dyn RayIntersect>],
     light: &Light,
     skybox: &Skybox,
+    samples: u32,
 ) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
@@ -68,14 +113,11 @@ fn render(
             scope.spawn(move || {
                 for (row, pixels) in chunk.chunks_mut(WIDTH).enumerate() {
                     let y = base_y + row;
-                    let screen_y = (1.0 - 2.0 * (y as f32 + 0.5) / HEIGHT as f32) * tan_fov;
 
                     for (x, pixel) in pixels.iter_mut().enumerate() {
-                        let screen_x =
-                            (2.0 * (x as f32 + 0.5) / WIDTH as f32 - 1.0) * aspect_ratio * tan_fov;
-
-                        let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
-                        *pixel = cast_ray(&camera.eye, &ray_direction, objects, light, skybox).to_hex();
+                        *pixel = sample_pixel(
+                            x, y, samples, aspect_ratio, tan_fov, camera, objects, light, skybox,
+                        );
                     }
                 }
             });
@@ -143,13 +185,21 @@ fn main() {
     let skybox = Skybox::load(SKYBOX_PATH);
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &objects, &light, &skybox);
+    render(&mut framebuffer, &camera, &objects, &light, &skybox, FINAL_SAMPLES);
+    let mut was_moving = false;
 
     while !rl.window_should_close() {
         let dt = rl.get_frame_time();
-        if handle_camera_input(&rl, &mut camera, &home_camera, dt) {
-            render(&mut framebuffer, &camera, &objects, &light, &skybox);
+        let moving = handle_camera_input(&rl, &mut camera, &home_camera, dt);
+
+        if moving {
+            // Preview rápido mientras se mueve la cámara.
+            render(&mut framebuffer, &camera, &objects, &light, &skybox, PREVIEW_SAMPLES);
+        } else if was_moving {
+            // Se acaba de soltar: una pasada final con antialiasing.
+            render(&mut framebuffer, &camera, &objects, &light, &skybox, FINAL_SAMPLES);
         }
+        was_moving = moving;
 
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(raylib::color::Color::BLACK);
