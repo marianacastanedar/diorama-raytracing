@@ -1,13 +1,12 @@
 [package]
-name = "rt_05_shadow"
+name = "diorama-raytracing"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-nalgebra-glm = "0.18.0"
-minifb = "0.26.0"
+raylib = "5.5"
+nalgebra-glm = "0.18"
 
+# El raytracer corre en CPU: sin optimizar, un frame de 1280x720 tarda segundos.
 [profile.dev]
 opt-level = 3
