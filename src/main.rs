@@ -6,10 +6,10 @@ mod light;
 mod plane;
 mod ray_intersect;
 mod raytracer;
+mod scene;
 
 use camera::Camera;
 use color::Color;
-use cube::Cube;
 use framebuffer::Framebuffer;
 use light::Light;
 use nalgebra_glm::Vec3;
@@ -17,6 +17,7 @@ use plane::Plane;
 use ray_intersect::{Material, RayIntersect};
 use raylib::prelude::RaylibDraw;
 use raytracer::cast_ray;
+use scene::Scene;
 use std::f32::consts::PI;
 
 const WIDTH: usize = 1280;
@@ -24,16 +25,15 @@ const HEIGHT: usize = 720;
 const FOV: f32 = PI / 3.0;
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
-    let sand = Material::new(Color::new(217, 191, 140), 0.9);
-    let rock = Material::new(Color::new(120, 120, 125), 0.6);
-    let water = Material::new(Color::new(40, 110, 160), 0.7);
+    let water = Material::new(Color::new(0, 102, 153), 0.6);
 
-    vec![
-        Box::new(Cube::new(Vec3::new(0.0, -0.5, 0.0), 1.0, sand)),
-        Box::new(Cube::new(Vec3::new(1.0, -0.5, 0.0), 1.0, sand)),
-        Box::new(Cube::new(Vec3::new(0.5, 0.5, -0.5), 1.0, rock)),
-        Box::new(Plane::new(Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0), water)),
-    ]
+    let mut objects = Scene::create_island_scene().objects;
+    objects.push(Box::new(Plane::new(
+        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        water,
+    )));
+    objects
 }
 
 fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[Box<dyn RayIntersect>], light: &Light) {
@@ -63,11 +63,11 @@ fn main() {
     rl.set_target_fps(60);
 
     let camera = Camera::new(
-        Vec3::new(0.0, 1.5, 4.0),
-        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(7.0, 6.0, 9.0),
+        Vec3::new(-1.0, 0.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
     );
-    let light = Light::new(Vec3::new(3.0, 5.0, 3.0), Color::new(255, 255, 255), 1.0);
+    let light = Light::new(Vec3::new(4.0, 8.0, 6.0), Color::new(255, 255, 255), 1.0);
     let objects = build_scene();
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
