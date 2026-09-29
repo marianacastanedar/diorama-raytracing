@@ -8,6 +8,7 @@ mod plane;
 mod ray_intersect;
 mod raytracer;
 mod scene;
+mod skybox;
 
 use camera::Camera;
 use color::Color;
@@ -20,6 +21,7 @@ use raylib::consts::KeyboardKey;
 use raylib::prelude::RaylibDraw;
 use raytracer::cast_ray;
 use scene::Scene;
+use skybox::Skybox;
 use std::f32::consts::PI;
 
 const WIDTH: usize = 1280;
@@ -27,6 +29,7 @@ const HEIGHT: usize = 720;
 const FOV: f32 = PI / 3.0;
 const ORBIT_SPEED: f32 = 1.6; // rad/seg
 const ZOOM_SPEED: f32 = 6.0; // unidades/seg
+const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     let water = materials::water();
@@ -43,7 +46,13 @@ fn build_scene() -> Vec<Box<dyn RayIntersect>> {
 /// Traza la escena y llena el framebuffer, repartiendo filas entre los
 /// núcleos disponibles: en single-thread cada frame tarda ~200ms, suficiente
 /// para que mover la cámara se sienta trabado.
-fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[Box<dyn RayIntersect>], light: &Light) {
+fn render(
+    framebuffer: &mut Framebuffer,
+    camera: &Camera,
+    objects: &[Box<dyn RayIntersect>],
+    light: &Light,
+    skybox: &Skybox,
+) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
 
@@ -66,7 +75,7 @@ fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[Box<dyn Ray
                             (2.0 * (x as f32 + 0.5) / WIDTH as f32 - 1.0) * aspect_ratio * tan_fov;
 
                         let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
-                        *pixel = cast_ray(&camera.eye, &ray_direction, objects, light).to_hex();
+                        *pixel = cast_ray(&camera.eye, &ray_direction, objects, light, skybox).to_hex();
                     }
                 }
             });
@@ -131,14 +140,15 @@ fn main() {
     let mut camera = Camera::new(home_camera.eye, home_camera.center, home_camera.up);
     let light = Light::new(Vec3::new(4.0, 8.0, 6.0), Color::new(255, 255, 255), 1.0);
     let objects = build_scene();
+    let skybox = Skybox::load(SKYBOX_PATH);
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &objects, &light);
+    render(&mut framebuffer, &camera, &objects, &light, &skybox);
 
     while !rl.window_should_close() {
         let dt = rl.get_frame_time();
         if handle_camera_input(&rl, &mut camera, &home_camera, dt) {
-            render(&mut framebuffer, &camera, &objects, &light);
+            render(&mut framebuffer, &camera, &objects, &light, &skybox);
         }
 
         let mut d = rl.begin_drawing(&thread);

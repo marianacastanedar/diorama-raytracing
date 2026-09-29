@@ -1,9 +1,9 @@
 use crate::color::Color;
 use crate::light::Light;
 use crate::ray_intersect::{Intersect, RayIntersect};
+use crate::skybox::Skybox;
 use nalgebra_glm::{dot, Vec3};
 
-const SKY_COLOR: Color = Color::new(30, 30, 45);
 const AMBIENT_FACTOR: f32 = 0.1;
 const SHININESS: f32 = 32.0;
 const MAX_DEPTH: u32 = 4;
@@ -56,14 +56,15 @@ fn cast_ray_recursive(
     ray_direction: &Vec3,
     objects: &[Box<dyn RayIntersect>],
     light: &Light,
+    skybox: &Skybox,
     depth: u32,
 ) -> Color {
     if depth >= MAX_DEPTH {
-        return SKY_COLOR;
+        return skybox.sample(ray_direction);
     }
 
     let Some(intersect) = closest_intersect(ray_origin, ray_direction, objects) else {
-        return SKY_COLOR;
+        return skybox.sample(ray_direction);
     };
 
     let material = intersect.material;
@@ -75,7 +76,7 @@ fn cast_ray_recursive(
     let diffuse_intensity = dot(&intersect.normal, &light_dir).max(0.0);
     let specular_intensity = dot(&view_dir, &reflect_dir).max(0.0).powf(SHININESS);
 
-    let ambient = material.diffuse * AMBIENT_FACTOR;
+    let ambient = material.diffuse * skybox.sample(&intersect.normal) * AMBIENT_FACTOR;
     let diffuse =
         material.diffuse * light.color * (material.albedo * diffuse_intensity * light.intensity);
     let specular = light.color * (material.specular * specular_intensity * light.intensity);
@@ -86,16 +87,28 @@ fn cast_ray_recursive(
     if material.reflectivity > 0.0 {
         let reflect_direction = reflect(ray_direction, &intersect.normal);
         let reflect_origin = intersect.point + reflect_direction * BIAS;
-        let reflect_color =
-            cast_ray_recursive(&reflect_origin, &reflect_direction, objects, light, depth + 1);
+        let reflect_color = cast_ray_recursive(
+            &reflect_origin,
+            &reflect_direction,
+            objects,
+            light,
+            skybox,
+            depth + 1,
+        );
         color = color + reflect_color * material.reflectivity;
     }
 
     if material.transparency > 0.0 {
         let refract_direction = refract(ray_direction, &intersect.normal, material.ior);
         let refract_origin = intersect.point + refract_direction * BIAS;
-        let refract_color =
-            cast_ray_recursive(&refract_origin, &refract_direction, objects, light, depth + 1);
+        let refract_color = cast_ray_recursive(
+            &refract_origin,
+            &refract_direction,
+            objects,
+            light,
+            skybox,
+            depth + 1,
+        );
         color = color + refract_color * material.transparency;
     }
 
@@ -107,6 +120,7 @@ pub fn cast_ray(
     ray_direction: &Vec3,
     objects: &[Box<dyn RayIntersect>],
     light: &Light,
+    skybox: &Skybox,
 ) -> Color {
-    cast_ray_recursive(ray_origin, ray_direction, objects, light, 0)
+    cast_ray_recursive(ray_origin, ray_direction, objects, light, skybox, 0)
 }
