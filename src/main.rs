@@ -15,6 +15,7 @@ use light::Light;
 use nalgebra_glm::Vec3;
 use plane::Plane;
 use ray_intersect::{Material, RayIntersect};
+use raylib::consts::KeyboardKey;
 use raylib::prelude::RaylibDraw;
 use raytracer::cast_ray;
 use scene::Scene;
@@ -23,6 +24,8 @@ use std::f32::consts::PI;
 const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
 const FOV: f32 = PI / 3.0;
+const ORBIT_SPEED: f32 = 1.6; // rad/seg
+const ZOOM_SPEED: f32 = 6.0; // unidades/seg
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     let water = Material::new(Color::new(0, 102, 153), 0.6);
@@ -36,22 +39,79 @@ fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     objects
 }
 
+/// Traza la escena y llena el framebuffer, repartiendo filas entre los
+/// núcleos disponibles: en single-thread cada frame tarda ~200ms, suficiente
+/// para que mover la cámara se sienta trabado.
 fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[Box<dyn RayIntersect>], light: &Light) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
 
-    for y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let screen_x = (2.0 * (x as f32 + 0.5) / WIDTH as f32 - 1.0) * aspect_ratio * tan_fov;
-            let screen_y = (1.0 - 2.0 * (y as f32 + 0.5) / HEIGHT as f32) * tan_fov;
+    let thread_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let rows_per_chunk = HEIGHT.div_ceil(thread_count);
 
-            let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
-            let color = cast_ray(&camera.eye, &ray_direction, objects, light);
+    std::thread::scope(|scope| {
+        for (chunk_index, chunk) in framebuffer.buffer.chunks_mut(rows_per_chunk * WIDTH).enumerate() {
+            let base_y = chunk_index * rows_per_chunk;
 
-            framebuffer.set_current_color(color.to_hex());
-            framebuffer.point(x, y);
+            scope.spawn(move || {
+                for (row, pixels) in chunk.chunks_mut(WIDTH).enumerate() {
+                    let y = base_y + row;
+                    let screen_y = (1.0 - 2.0 * (y as f32 + 0.5) / HEIGHT as f32) * tan_fov;
+
+                    for (x, pixel) in pixels.iter_mut().enumerate() {
+                        let screen_x =
+                            (2.0 * (x as f32 + 0.5) / WIDTH as f32 - 1.0) * aspect_ratio * tan_fov;
+
+                        let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
+                        *pixel = cast_ray(&camera.eye, &ray_direction, objects, light).to_hex();
+                    }
+                }
+            });
         }
+    });
+}
+
+/// Aplica input de flechas (orbita), +/- (zoom) y R (reset). Devuelve true si
+/// la cámara cambió, para no re-trazar la escena cuando el usuario no toca nada.
+fn handle_camera_input(rl: &raylib::RaylibHandle, camera: &mut Camera, home: &Camera, dt: f32) -> bool {
+    let mut changed = false;
+    let orbit_step = ORBIT_SPEED * dt;
+    let zoom_step = ZOOM_SPEED * dt;
+
+    if rl.is_key_down(KeyboardKey::KEY_RIGHT) {
+        camera.orbit(orbit_step, 0.0);
+        changed = true;
     }
+    if rl.is_key_down(KeyboardKey::KEY_LEFT) {
+        camera.orbit(-orbit_step, 0.0);
+        changed = true;
+    }
+    if rl.is_key_down(KeyboardKey::KEY_UP) {
+        camera.orbit(0.0, -orbit_step);
+        changed = true;
+    }
+    if rl.is_key_down(KeyboardKey::KEY_DOWN) {
+        camera.orbit(0.0, orbit_step);
+        changed = true;
+    }
+    if rl.is_key_down(KeyboardKey::KEY_EQUAL) || rl.is_key_down(KeyboardKey::KEY_KP_ADD) {
+        camera.zoom(-zoom_step);
+        changed = true;
+    }
+    if rl.is_key_down(KeyboardKey::KEY_MINUS) || rl.is_key_down(KeyboardKey::KEY_KP_SUBTRACT) {
+        camera.zoom(zoom_step);
+        changed = true;
+    }
+    if rl.is_key_pressed(KeyboardKey::KEY_R) {
+        camera.eye = home.eye;
+        camera.center = home.center;
+        camera.up = home.up;
+        changed = true;
+    }
+
+    changed
 }
 
 fn main() {
@@ -62,11 +122,12 @@ fn main() {
 
     rl.set_target_fps(60);
 
-    let camera = Camera::new(
+    let home_camera = Camera::new(
         Vec3::new(7.0, 6.0, 9.0),
         Vec3::new(-1.0, 0.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
     );
+    let mut camera = Camera::new(home_camera.eye, home_camera.center, home_camera.up);
     let light = Light::new(Vec3::new(4.0, 8.0, 6.0), Color::new(255, 255, 255), 1.0);
     let objects = build_scene();
 
@@ -74,6 +135,11 @@ fn main() {
     render(&mut framebuffer, &camera, &objects, &light);
 
     while !rl.window_should_close() {
+        let dt = rl.get_frame_time();
+        if handle_camera_input(&rl, &mut camera, &home_camera, dt) {
+            render(&mut framebuffer, &camera, &objects, &light);
+        }
+
         let mut d = rl.begin_drawing(&thread);
         d.clear_background(raylib::color::Color::BLACK);
 
