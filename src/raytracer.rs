@@ -5,6 +5,7 @@ use nalgebra_glm::{dot, Vec3};
 
 const SKY_COLOR: Color = Color::new(30, 30, 45);
 const AMBIENT_FACTOR: f32 = 0.1;
+const SHININESS: f32 = 32.0;
 
 fn closest_intersect(
     ray_origin: &Vec3,
@@ -35,12 +36,17 @@ pub fn cast_ray(
     };
 
     let light_dir = (light.position - intersect.point).normalize();
+    let view_dir = -ray_direction.normalize();
+    let reflect_dir = 2.0 * dot(&intersect.normal, &light_dir) * intersect.normal - light_dir;
+
     let diffuse_intensity = dot(&intersect.normal, &light_dir).max(0.0);
+    let specular_intensity = dot(&view_dir, &reflect_dir).max(0.0).powf(SHININESS);
 
     let ambient = intersect.material.diffuse * AMBIENT_FACTOR;
     let diffuse = intersect.material.diffuse
         * light.color
         * (intersect.material.albedo * diffuse_intensity * light.intensity);
+    let specular = light.color * (intersect.material.specular * specular_intensity * light.intensity);
 
-    ambient + diffuse
+    ambient + diffuse + specular
 }

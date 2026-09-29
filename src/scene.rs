@@ -1,5 +1,5 @@
-use crate::color::Color;
 use crate::cube::Cube;
+use crate::materials;
 use crate::ray_intersect::{Material, RayIntersect};
 use nalgebra_glm::Vec3;
 
@@ -15,10 +15,10 @@ impl Scene {
     /// Isla minimalista: base de arena, acantilado de roca, muelle de madera
     /// y un par de detalles en vidrio. ~26 cubos en total.
     pub fn create_island_scene() -> Self {
-        let sand = Material::new(Color::new(204, 178, 128), 0.9);
-        let rock = Material::new(Color::new(128, 128, 128), 0.7);
-        let wood = Material::new(Color::new(153, 102, 51), 0.75);
-        let glass = Material::new(Color::new(179, 204, 230), 0.3);
+        let sand = materials::sand();
+        let rock = materials::rock();
+        let wood = materials::wood();
+        let glass = materials::glass();
 
         let mut scene = Scene::new();
 

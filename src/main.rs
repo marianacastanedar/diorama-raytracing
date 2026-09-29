@@ -3,6 +3,7 @@ mod color;
 mod cube;
 mod framebuffer;
 mod light;
+mod materials;
 mod plane;
 mod ray_intersect;
 mod raytracer;
@@ -14,7 +15,7 @@ use framebuffer::Framebuffer;
 use light::Light;
 use nalgebra_glm::Vec3;
 use plane::Plane;
-use ray_intersect::{Material, RayIntersect};
+use ray_intersect::RayIntersect;
 use raylib::consts::KeyboardKey;
 use raylib::prelude::RaylibDraw;
 use raytracer::cast_ray;
@@ -28,7 +29,7 @@ const ORBIT_SPEED: f32 = 1.6; // rad/seg
 const ZOOM_SPEED: f32 = 6.0; // unidades/seg
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
-    let water = Material::new(Color::new(0, 102, 153), 0.6);
+    let water = materials::water();
 
     let mut objects = Scene::create_island_scene().objects;
     objects.push(Box::new(Plane::new(
