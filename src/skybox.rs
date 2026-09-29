@@ -93,8 +93,7 @@ fn decode_radiance_hdr(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
         let row = &mut pixels[y * width * 4..(y + 1) * width * 4];
 
         // Scanline RLE "nuevo estilo": empieza con 2 2 <ancho en 16 bits>.
-        let is_new_rle = width >= 8
-            && width < 0x8000
+        let is_new_rle = (8..0x8000).contains(&width)
             && bytes[pos] == 2
             && bytes[pos + 1] == 2
             && ((bytes[pos + 2] as usize) << 8 | bytes[pos + 3] as usize) == width;

@@ -33,6 +33,14 @@ const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 const PREVIEW_SAMPLES: u32 = 1; // mientras se mueve la cámara: 1 rayo/pixel
 const FINAL_SAMPLES: u32 = 2; // en reposo: supersampling 2x2 para antialiasing
 
+/// Agrupa lo que necesita cada rayo aparte de la cámara: geometría, luz y
+/// fondo. Se pasan siempre juntos, así que van en un solo parámetro.
+struct SceneView<'a> {
+    objects: &'a [Box<dyn RayIntersect>],
+    light: &'a Light,
+    skybox: &'a Skybox,
+}
+
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     let water = materials::water();
 
@@ -54,9 +62,7 @@ fn sample_pixel(
     aspect_ratio: f32,
     tan_fov: f32,
     camera: &Camera,
-    objects: &[Box<dyn RayIntersect>],
-    light: &Light,
-    skybox: &Skybox,
+    scene: &SceneView,
 ) -> u32 {
     let mut r_sum = 0.0;
     let mut g_sum = 0.0;
@@ -71,7 +77,8 @@ fn sample_pixel(
             let screen_y = (1.0 - 2.0 * py / HEIGHT as f32) * tan_fov;
 
             let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
-            let hex = cast_ray(&camera.eye, &ray_direction, objects, light, skybox).to_hex();
+            let hex =
+                cast_ray(&camera.eye, &ray_direction, scene.objects, scene.light, scene.skybox).to_hex();
 
             r_sum += ((hex >> 16) & 0xFF) as f32;
             g_sum += ((hex >> 8) & 0xFF) as f32;
@@ -90,14 +97,7 @@ fn sample_pixel(
 /// Traza la escena y llena el framebuffer, repartiendo filas entre los
 /// núcleos disponibles: en single-thread cada frame tarda ~200ms, suficiente
 /// para que mover la cámara se sienta trabado.
-fn render(
-    framebuffer: &mut Framebuffer,
-    camera: &Camera,
-    objects: &[Box<dyn RayIntersect>],
-    light: &Light,
-    skybox: &Skybox,
-    samples: u32,
-) {
+fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, samples: u32) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
 
@@ -115,9 +115,7 @@ fn render(
                     let y = base_y + row;
 
                     for (x, pixel) in pixels.iter_mut().enumerate() {
-                        *pixel = sample_pixel(
-                            x, y, samples, aspect_ratio, tan_fov, camera, objects, light, skybox,
-                        );
+                        *pixel = sample_pixel(x, y, samples, aspect_ratio, tan_fov, camera, scene);
                     }
                 }
             });
@@ -183,9 +181,14 @@ fn main() {
     let light = Light::new(Vec3::new(4.0, 8.0, 6.0), Color::new(255, 255, 255), 1.0);
     let objects = build_scene();
     let skybox = Skybox::load(SKYBOX_PATH);
+    let scene = SceneView {
+        objects: &objects,
+        light: &light,
+        skybox: &skybox,
+    };
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &objects, &light, &skybox, FINAL_SAMPLES);
+    render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES);
     let mut was_moving = false;
 
     while !rl.window_should_close() {
@@ -194,10 +197,10 @@ fn main() {
 
         if moving {
             // Preview rápido mientras se mueve la cámara.
-            render(&mut framebuffer, &camera, &objects, &light, &skybox, PREVIEW_SAMPLES);
+            render(&mut framebuffer, &camera, &scene, PREVIEW_SAMPLES);
         } else if was_moving {
             // Se acaba de soltar: una pasada final con antialiasing.
-            render(&mut framebuffer, &camera, &objects, &light, &skybox, FINAL_SAMPLES);
+            render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES);
         }
         was_moving = moving;
 

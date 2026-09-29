@@ -13,15 +13,7 @@ impl Color {
         Color { r, g, b }
     }
 
-    pub fn from_hex(hex: u32) -> Self {
-        Color {
-            r: ((hex >> 16) & 0xFF) as u8,
-            g: ((hex >> 8) & 0xFF) as u8,
-            b: (hex & 0xFF) as u8,
-        }
-    }
-
-    pub fn to_hex(&self) -> u32 {
+    pub fn to_hex(self) -> u32 {
         ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }
 }
