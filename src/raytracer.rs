@@ -4,27 +4,50 @@ use crate::ray_intersect::{Intersect, RayIntersect};
 use crate::skybox::Skybox;
 use nalgebra_glm::{dot, Vec3};
 
-const AMBIENT_FACTOR: f32 = 0.1;
+// Más alto que un valor "realista": con una sola luz y sin rebotes, las
+// caras sin luz directa quedaban casi negras y se veía muy duro.
+const AMBIENT_FACTOR: f32 = 0.35;
 const SHININESS: f32 = 32.0;
 const MAX_DEPTH: u32 = 4;
 const BIAS: f32 = 1e-3;
+const EMISSIVE_INTENSITY: f32 = 1.5;
+const TILE_SIZE: f32 = 0.3;
+const TILE_COLOR_A: Color = Color::from_hex(0xB33A28);
+const TILE_COLOR_B: Color = Color::from_hex(0x9A2F20);
 
-fn closest_intersect(
-    ray_origin: &Vec3,
-    ray_direction: &Vec3,
-    objects: &[Box<dyn RayIntersect>],
-) -> Option<Intersect> {
-    let mut closest: Option<Intersect> = None;
+/// Todo lo que necesita un rayo aparte de su origen/dirección. `objects` es
+/// la escena estática; `dynamic_objects` son los cubos que cambian cada
+/// frame (el humo animado) — van separados porque se reconstruyen en cada
+/// render en vez de vivir en la escena fija.
+pub struct RenderContext<'a> {
+    pub objects: &'a [Box<dyn RayIntersect>],
+    pub dynamic_objects: &'a [Box<dyn RayIntersect>],
+    pub light: &'a Light,
+    pub skybox: &'a Skybox,
+    pub lights_on: bool,
+}
 
-    for object in objects {
-        if let Some(intersect) = object.ray_intersect(ray_origin, ray_direction) {
-            if closest.is_none_or(|c| intersect.distance < c.distance) {
-                closest = Some(intersect);
-            }
-        }
+fn closest_intersect(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext) -> Option<Intersect> {
+    ctx.objects
+        .iter()
+        .chain(ctx.dynamic_objects.iter())
+        .filter_map(|object| object.ray_intersect(ray_origin, ray_direction))
+        .min_by(|a, b| a.distance.total_cmp(&b.distance))
+}
+
+/// Patrón de tejas alternadas: ver INSTRUCCIONES_ISLA.md sección 5.
+fn tile_color(point: &Vec3) -> Color {
+    let cell = (point.x / TILE_SIZE).floor() + (point.y / TILE_SIZE).floor() + (point.z / TILE_SIZE).floor();
+    if (cell as i64).rem_euclid(2) == 0 {
+        TILE_COLOR_A
+    } else {
+        TILE_COLOR_B
     }
+}
 
-    closest
+fn in_shadow(point: &Vec3, light_dir: &Vec3, light_distance: f32, ctx: &RenderContext) -> bool {
+    let shadow_origin = point + light_dir * BIAS;
+    closest_intersect(&shadow_origin, light_dir, ctx).is_some_and(|hit| hit.distance < light_distance)
 }
 
 fn reflect(incident: &Vec3, normal: &Vec3) -> Vec3 {
@@ -51,35 +74,52 @@ fn refract(incident: &Vec3, normal: &Vec3, ior: f32) -> Vec3 {
     }
 }
 
-fn cast_ray_recursive(
-    ray_origin: &Vec3,
-    ray_direction: &Vec3,
-    objects: &[Box<dyn RayIntersect>],
-    light: &Light,
-    skybox: &Skybox,
-    depth: u32,
-) -> Color {
+fn cast_ray_recursive(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext, depth: u32) -> Color {
     if depth >= MAX_DEPTH {
-        return skybox.sample(ray_direction);
+        return ctx.skybox.sample(ray_direction);
     }
 
-    let Some(intersect) = closest_intersect(ray_origin, ray_direction, objects) else {
-        return skybox.sample(ray_direction);
+    let Some(intersect) = closest_intersect(ray_origin, ray_direction, ctx) else {
+        return ctx.skybox.sample(ray_direction);
     };
 
     let material = intersect.material;
 
-    let light_dir = (light.position - intersect.point).normalize();
+    // Ventanas encendidas: color plano sin depender de luz ni sombras (ver
+    // Material::emissive). Apagadas, caen directo al shading normal de abajo
+    // con su mismo color y las propiedades físicas de Vidrio.
+    if let Some(glow) = material.emissive {
+        if ctx.lights_on {
+            return glow * EMISSIVE_INTENSITY;
+        }
+    }
+
+    let base_color = if material.tiled { tile_color(&intersect.point) } else { material.diffuse };
+
+    let light_vector = ctx.light.position - intersect.point;
+    let light_distance = light_vector.magnitude();
+    let light_dir = light_vector / light_distance;
     let view_dir = -ray_direction.normalize();
     let reflect_dir = reflect(&-light_dir, &intersect.normal);
 
     let diffuse_intensity = dot(&intersect.normal, &light_dir).max(0.0);
     let specular_intensity = dot(&view_dir, &reflect_dir).max(0.0).powf(SHININESS);
 
-    let ambient = material.diffuse * skybox.sample(&intersect.normal) * AMBIENT_FACTOR;
-    let diffuse =
-        material.diffuse * light.color * (material.albedo * diffuse_intensity * light.intensity);
-    let specular = light.color * (material.specular * specular_intensity * light.intensity);
+    // Si la cara ya mira para otro lado la luz no aporta nada: no hace falta
+    // ni tirar el rayo de sombra.
+    let lit = diffuse_intensity > 0.0 && !in_shadow(&intersect.point, &light_dir, light_distance, ctx);
+    let shadow_factor = if lit { 1.0 } else { 0.0 };
+
+    // Sesgado hacia arriba en vez de la normal exacta: si no, caras que
+    // miran casi al horizonte samplean la silueta oscura de las montañas
+    // del panorama y quedan negras sin importar AMBIENT_FACTOR.
+    let ambient_dir = (intersect.normal + Vec3::new(0.0, 1.5, 0.0)).normalize();
+    let ambient = base_color * ctx.skybox.sample(&ambient_dir) * AMBIENT_FACTOR;
+    let diffuse = base_color
+        * ctx.light.color
+        * (material.albedo * diffuse_intensity * ctx.light.intensity * shadow_factor);
+    let specular =
+        ctx.light.color * (material.specular * specular_intensity * ctx.light.intensity * shadow_factor);
 
     let local_weight = (1.0 - material.reflectivity - material.transparency).max(0.0);
     let mut color = (ambient + diffuse + specular) * local_weight;
@@ -87,40 +127,20 @@ fn cast_ray_recursive(
     if material.reflectivity > 0.0 {
         let reflect_direction = reflect(ray_direction, &intersect.normal);
         let reflect_origin = intersect.point + reflect_direction * BIAS;
-        let reflect_color = cast_ray_recursive(
-            &reflect_origin,
-            &reflect_direction,
-            objects,
-            light,
-            skybox,
-            depth + 1,
-        );
+        let reflect_color = cast_ray_recursive(&reflect_origin, &reflect_direction, ctx, depth + 1);
         color = color + reflect_color * material.reflectivity;
     }
 
     if material.transparency > 0.0 {
         let refract_direction = refract(ray_direction, &intersect.normal, material.ior);
         let refract_origin = intersect.point + refract_direction * BIAS;
-        let refract_color = cast_ray_recursive(
-            &refract_origin,
-            &refract_direction,
-            objects,
-            light,
-            skybox,
-            depth + 1,
-        );
+        let refract_color = cast_ray_recursive(&refract_origin, &refract_direction, ctx, depth + 1);
         color = color + refract_color * material.transparency;
     }
 
     color
 }
 
-pub fn cast_ray(
-    ray_origin: &Vec3,
-    ray_direction: &Vec3,
-    objects: &[Box<dyn RayIntersect>],
-    light: &Light,
-    skybox: &Skybox,
-) -> Color {
-    cast_ray_recursive(ray_origin, ray_direction, objects, light, skybox, 0)
+pub fn cast_ray(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext) -> Color {
+    cast_ray_recursive(ray_origin, ray_direction, ctx, 0)
 }

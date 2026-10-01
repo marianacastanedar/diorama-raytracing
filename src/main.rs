@@ -19,11 +19,13 @@ use plane::Plane;
 use ray_intersect::RayIntersect;
 use raylib::consts::KeyboardKey;
 use raylib::prelude::RaylibDraw;
-use raytracer::cast_ray;
+use raytracer::{cast_ray, RenderContext};
 use scene::Scene;
 use skybox::Skybox;
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::time::Instant;
 
 const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
@@ -38,10 +40,12 @@ const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 const LIVE_SAMPLES: u32 = 1;
 const LIVE_BLOCK: usize = 4;
 
-/// Agrupa lo que necesita cada rayo aparte de la cámara: geometría, luz y
+/// La parte de la escena que no cambia entre frames: geometría fija, luz y
 /// fondo. Se pasan siempre juntos, así que van en un solo parámetro. Son
 /// todas referencias (Copy), así que el worker se queda con su propia copia
-/// del struct sin tener que clonar la escena.
+/// sin tener que clonar la escena. El humo animado y el estado de las
+/// ventanas (tecla L) no viven acá porque cambian cada frame — se arman en
+/// el loop del worker y se combinan recién al construir el `RenderContext`.
 #[derive(Clone, Copy)]
 struct SceneView<'a> {
     objects: &'a [Box<dyn RayIntersect>],
@@ -55,14 +59,14 @@ fn build_scene() -> Vec<Box<dyn RayIntersect>> {
 
     let mut objects = Scene::create_island_scene().objects;
     objects.push(Box::new(Plane::new(
-        Vec3::new(0.0, -1.0, 0.0),
+        Vec3::new(0.0, 0.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
         water,
     )));
     // Para que la refracción del agua tenga algo sólido contra qué terminar
     // en vez de escapar al skybox mirando hacia el nadir (ver materials::seafloor).
     objects.push(Box::new(Plane::new(
-        Vec3::new(0.0, -3.0, 0.0),
+        Vec3::new(0.0, -2.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
         seafloor,
     )));
@@ -78,7 +82,7 @@ fn sample_pixel(
     aspect_ratio: f32,
     tan_fov: f32,
     camera: &Camera,
-    scene: &SceneView,
+    ctx: &RenderContext,
 ) -> u32 {
     let mut r_sum = 0.0;
     let mut g_sum = 0.0;
@@ -93,8 +97,7 @@ fn sample_pixel(
             let screen_y = (1.0 - 2.0 * py / HEIGHT as f32) * tan_fov;
 
             let ray_direction = camera.basis_change(&Vec3::new(screen_x, screen_y, -1.0));
-            let hex =
-                cast_ray(&camera.eye, &ray_direction, scene.objects, scene.light, scene.skybox).to_hex();
+            let hex = cast_ray(&camera.eye, &ray_direction, ctx).to_hex();
 
             r_sum += ((hex >> 16) & 0xFF) as f32;
             g_sum += ((hex >> 8) & 0xFF) as f32;
@@ -116,7 +119,7 @@ fn sample_pixel(
 /// `block_size` > 1 sacrifica resolución por velocidad: calcula un solo rayo
 /// cada `block_size`x`block_size` pixeles y repite ese color en el resto del
 /// bloque. Con 1 hace el render a resolución completa.
-fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, samples: u32, block_size: usize) {
+fn render(framebuffer: &mut Framebuffer, camera: &Camera, ctx: &RenderContext, samples: u32, block_size: usize) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
 
@@ -142,7 +145,7 @@ fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, sam
                     if row % block_size == 0 {
                         let mut x = 0;
                         while x < WIDTH {
-                            let color = sample_pixel(x, y, samples, aspect_ratio, tan_fov, camera, scene);
+                            let color = sample_pixel(x, y, samples, aspect_ratio, tan_fov, camera, ctx);
                             let end = (x + block_size).min(WIDTH);
                             key_row[x..end].fill(color);
                             x = end;
@@ -195,12 +198,16 @@ fn main() {
     rl.set_target_fps(60);
 
     let home_camera = Camera::new(
-        Vec3::new(-0.2, 4.3, 7.8),
-        Vec3::new(-0.5, 0.3, 0.0),
+        Vec3::new(6.0, 8.7, 16.5),
+        Vec3::new(0.0, 5.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
     );
     let mut camera = Camera::new(home_camera.eye, home_camera.center, home_camera.up);
-    let light = Light::new(Vec3::new(4.0, 8.0, 6.0), Color::new(255, 255, 255), 1.0);
+    // Direccional "desde arriba y desde la derecha": como está lejos
+    // respecto al tamaño de la escena (~18 unidades vs. una isla de ~8 de
+    // ancho), una luz puntual en esa posición ya aproxima bien una
+    // direccional sin agregar un tipo de luz nuevo.
+    let light = Light::new(Vec3::new(10.0, 15.0, 6.0), Color::new(255, 255, 255), 1.0);
     let objects = build_scene();
     let skybox = Skybox::load(SKYBOX_PATH);
     let scene = SceneView {
@@ -208,9 +215,25 @@ fn main() {
         light: &light,
         skybox: &skybox,
     };
+    // Tecla L: prende/apaga W01 y D02 (Material::emissive). Arranca prendido.
+    let lights_on = AtomicBool::new(true);
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &scene, LIVE_SAMPLES, LIVE_BLOCK);
+    let start_time = Instant::now();
+    let initial_smoke = Scene::smoke_cubes(0.0);
+    render(
+        &mut framebuffer,
+        &camera,
+        &RenderContext {
+            objects: scene.objects,
+            dynamic_objects: &initial_smoke,
+            light: scene.light,
+            skybox: scene.skybox,
+            lights_on: true,
+        },
+        LIVE_SAMPLES,
+        LIVE_BLOCK,
+    );
 
     // El render (incluso en bloques) puede tardar más que un frame de
     // ventana, y con animaciones corriendo hace falta re-trazar todo el
@@ -222,6 +245,12 @@ fn main() {
     // cuánto tarde un frame del raytracer.
     let (camera_tx, camera_rx) = mpsc::channel::<Camera>();
     let (frame_tx, frame_rx) = mpsc::channel::<Vec<u32>>();
+    // Receiver/Sender no son Sync, así que el closure del worker tiene que
+    // ser `move` (se queda dueño de camera_rx/frame_tx). Para que el loop
+    // principal pueda seguir usando `lights_on` después, le pasamos al
+    // worker una referencia (sí es Sync, AtomicBool está pensado para
+    // compartirse así) en vez de moverlo.
+    let lights_on_ref = &lights_on;
 
     std::thread::scope(|thread_scope| {
         thread_scope.spawn(move || {
@@ -234,7 +263,17 @@ fn main() {
                     live_camera = newer;
                 }
 
-                render(&mut worker_framebuffer, &live_camera, &scene, LIVE_SAMPLES, LIVE_BLOCK);
+                let time = start_time.elapsed().as_secs_f32();
+                let smoke = Scene::smoke_cubes(time);
+                let ctx = RenderContext {
+                    objects: scene.objects,
+                    dynamic_objects: &smoke,
+                    light: scene.light,
+                    skybox: scene.skybox,
+                    lights_on: lights_on_ref.load(Ordering::Relaxed),
+                };
+
+                render(&mut worker_framebuffer, &live_camera, &ctx, LIVE_SAMPLES, LIVE_BLOCK);
 
                 if frame_tx.send(worker_framebuffer.buffer.clone()).is_err() {
                     break;
@@ -245,6 +284,9 @@ fn main() {
         while !rl.window_should_close() {
             let dt = rl.get_frame_time();
             handle_camera_input(&rl, &mut camera, &home_camera, dt);
+            if rl.is_key_pressed(KeyboardKey::KEY_L) {
+                lights_on.fetch_xor(true, Ordering::Relaxed);
+            }
             let _ = camera_tx.send(camera);
 
             if let Ok(mut latest) = frame_rx.try_recv() {

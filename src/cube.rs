@@ -5,12 +5,12 @@ const EPSILON: f32 = 1e-6;
 
 pub struct Cube {
     pub center: Vec3,
-    pub size: f32,
+    pub size: Vec3,
     pub material: Material,
 }
 
 impl Cube {
-    pub fn new(center: Vec3, size: f32, material: Material) -> Self {
+    pub fn new(center: Vec3, size: Vec3, material: Material) -> Self {
         Cube {
             center,
             size,
@@ -19,11 +19,11 @@ impl Cube {
     }
 
     fn min_bound(&self) -> Vec3 {
-        self.center - Vec3::new(self.size, self.size, self.size) / 2.0
+        self.center - self.size / 2.0
     }
 
     fn max_bound(&self) -> Vec3 {
-        self.center + Vec3::new(self.size, self.size, self.size) / 2.0
+        self.center + self.size / 2.0
     }
 }
 

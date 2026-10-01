@@ -1,9 +1,15 @@
 use nalgebra_glm::Vec3;
 use std::f32::consts::PI;
 
-const PITCH_LIMIT: f32 = PI / 2.0 - 0.1;
-const MIN_RADIUS: f32 = 2.0;
-const MAX_RADIUS: f32 = 25.0;
+// Asimétrico a propósito: mirando desde arriba (pitch negativo) puede subir
+// casi hasta vertical, pero bajando (pitch positivo acerca la cámara al
+// nivel del agua en y=0) se frena bastante antes para no meter la cámara
+// bajo el agua — con el target en y=5.0 y radio hasta MAX_RADIUS, 6° de
+// margen deja el ojo de la cámara por encima del agua con margen.
+const PITCH_LIMIT_UP: f32 = PI / 2.0 - 0.1;
+const PITCH_LIMIT_DOWN: f32 = 6.0 * PI / 180.0;
+const MIN_RADIUS: f32 = 10.0;
+const MAX_RADIUS: f32 = 30.0;
 
 #[derive(Clone, Copy)]
 pub struct Camera {
@@ -38,7 +44,7 @@ impl Camera {
         let current_pitch = (-radius_vector.y).atan2(radius_xz);
 
         let new_yaw = (current_yaw + delta_yaw) % (2.0 * PI);
-        let new_pitch = (current_pitch + delta_pitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+        let new_pitch = (current_pitch + delta_pitch).clamp(-PITCH_LIMIT_UP, PITCH_LIMIT_DOWN);
 
         self.eye = self.center
             + Vec3::new(

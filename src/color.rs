@@ -13,6 +13,16 @@ impl Color {
         Color { r, g, b }
     }
 
+    /// Para escribir colores tal como vienen en la tabla de la escena, ej.
+    /// `Color::from_hex(0xC27A3E)`.
+    pub const fn from_hex(hex: u32) -> Self {
+        Color {
+            r: ((hex >> 16) & 0xFF) as u8,
+            g: ((hex >> 8) & 0xFF) as u8,
+            b: (hex & 0xFF) as u8,
+        }
+    }
+
     pub fn to_hex(self) -> u32 {
         ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }

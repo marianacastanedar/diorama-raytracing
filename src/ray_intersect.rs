@@ -9,6 +9,13 @@ pub struct Material {
     pub transparency: f32,
     pub reflectivity: f32,
     pub ior: f32,
+    /// Patrón de tejas alternadas calculado desde el punto de impacto
+    /// (ver `raytracer::tile_color`), en vez de un color fijo.
+    pub tiled: bool,
+    /// Color sin sombrear que se muestra cuando la luz del material está
+    /// prendida (ventanas que se encienden con la tecla L). `None` = material
+    /// normal, nunca emite.
+    pub emissive: Option<Color>,
 }
 
 impl Material {
@@ -27,7 +34,19 @@ impl Material {
             transparency,
             reflectivity,
             ior,
+            tiled: false,
+            emissive: None,
         }
+    }
+
+    pub fn tiled(mut self) -> Self {
+        self.tiled = true;
+        self
+    }
+
+    pub fn emissive(mut self, color: Color) -> Self {
+        self.emissive = Some(color);
+        self
     }
 }
 
