@@ -37,6 +37,9 @@ const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 // escena. Es la única calidad que usamos ahora, corriendo sin parar en el
 // hilo de fondo (ver comentario en main sobre por qué el render no vive más
 // en el loop principal).
+// Un ciclo día/noche completo cada ~100 segundos: lento, de fondo, sin
+// competir con la cámara.
+const NIGHT_CYCLE_SECONDS: f32 = 100.0;
 const LIVE_SAMPLES: u32 = 1;
 const LIVE_BLOCK: usize = 4;
 
@@ -51,6 +54,12 @@ struct SceneView<'a> {
     objects: &'a [Box<dyn RayIntersect>],
     light: &'a Light,
     skybox: &'a Skybox,
+}
+
+/// 0.0 = día, 1.0 = noche cerrada, oscilando sin saltos (coseno, arranca en
+/// 0.0 = día apenas empieza el programa).
+fn night_factor(time: f32) -> f32 {
+    0.5 - 0.5 * (time * 2.0 * PI / NIGHT_CYCLE_SECONDS).cos()
 }
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
@@ -230,6 +239,7 @@ fn main() {
             light: scene.light,
             skybox: scene.skybox,
             lights_on: true,
+            night_factor: night_factor(0.0),
         },
         LIVE_SAMPLES,
         LIVE_BLOCK,
@@ -271,6 +281,7 @@ fn main() {
                     light: scene.light,
                     skybox: scene.skybox,
                     lights_on: lights_on_ref.load(Ordering::Relaxed),
+                    night_factor: night_factor(time),
                 };
 
                 render(&mut worker_framebuffer, &live_camera, &ctx, LIVE_SAMPLES, LIVE_BLOCK);

@@ -25,6 +25,10 @@ pub struct RenderContext<'a> {
     pub light: &'a Light,
     pub skybox: &'a Skybox,
     pub lights_on: bool,
+    /// 0.0 = pleno día (el skybox tal cual, Kiara Dawn), 1.0 = noche cerrada.
+    /// Oscurece el cielo/ambient y atenúa el sol; nunca llega a negro total
+    /// para no perder lectura de la escena.
+    pub night_factor: f32,
 }
 
 fn closest_intersect(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext) -> Option<Intersect> {
@@ -43,6 +47,11 @@ fn tile_color(point: &Vec3) -> Color {
     } else {
         TILE_COLOR_B
     }
+}
+
+/// Sample del skybox atenuado por el ciclo día/noche.
+fn sky(ctx: &RenderContext, direction: &Vec3) -> Color {
+    ctx.skybox.sample(direction) * (1.0 - ctx.night_factor * 0.85)
 }
 
 fn in_shadow(point: &Vec3, light_dir: &Vec3, light_distance: f32, ctx: &RenderContext) -> bool {
@@ -76,11 +85,11 @@ fn refract(incident: &Vec3, normal: &Vec3, ior: f32) -> Vec3 {
 
 fn cast_ray_recursive(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext, depth: u32) -> Color {
     if depth >= MAX_DEPTH {
-        return ctx.skybox.sample(ray_direction);
+        return sky(ctx, ray_direction);
     }
 
     let Some(intersect) = closest_intersect(ray_origin, ray_direction, ctx) else {
-        return ctx.skybox.sample(ray_direction);
+        return sky(ctx, ray_direction);
     };
 
     let material = intersect.material;
@@ -114,12 +123,13 @@ fn cast_ray_recursive(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderConte
     // miran casi al horizonte samplean la silueta oscura de las montañas
     // del panorama y quedan negras sin importar AMBIENT_FACTOR.
     let ambient_dir = (intersect.normal + Vec3::new(0.0, 1.5, 0.0)).normalize();
-    let ambient = base_color * ctx.skybox.sample(&ambient_dir) * AMBIENT_FACTOR;
-    let diffuse = base_color
-        * ctx.light.color
-        * (material.albedo * diffuse_intensity * ctx.light.intensity * shadow_factor);
-    let specular =
-        ctx.light.color * (material.specular * specular_intensity * ctx.light.intensity * shadow_factor);
+    let ambient = base_color * sky(ctx, &ambient_dir) * AMBIENT_FACTOR;
+
+    // El sol también se apaga de noche, no solo el cielo — si no, la escena
+    // se oscurece pero sigue con sombras duras de mediodía.
+    let sun_factor = ctx.light.intensity * shadow_factor * (1.0 - ctx.night_factor * 0.8);
+    let diffuse = base_color * ctx.light.color * (material.albedo * diffuse_intensity * sun_factor);
+    let specular = ctx.light.color * (material.specular * specular_intensity * sun_factor);
 
     let local_weight = (1.0 - material.reflectivity - material.transparency).max(0.0);
     let mut color = (ambient + diffuse + specular) * local_weight;
