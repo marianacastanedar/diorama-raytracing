@@ -129,6 +129,25 @@ impl Scene {
         puffs
     }
 
+    /// Brasa en la boca de la chimenea (K01, tope en y=9.6): de día es un
+    /// cubito más del mismo color de la chimenea, casi invisible; de noche
+    /// titila con un brillo cálido (ver `Material::emissive`) para que se
+    /// vea "prendida". Dinámico como el humo, porque el titileo depende del
+    /// tiempo.
+    pub fn chimney_ember(time: f32, night_factor: f32) -> Box<dyn RayIntersect> {
+        let base = materials::rock(Color::from_hex(0xD98A55));
+        let center = Vec3::new(1.4, 9.725, -1.0);
+        let size = Vec3::new(0.25, 0.25, 0.25);
+
+        if night_factor < 0.1 {
+            return Box::new(Cube::new(center, size, base));
+        }
+
+        let flicker = 0.75 + 0.25 * (time * 9.0).sin();
+        let glow = Color::new(255, 150, 60) * (flicker * night_factor.min(1.0));
+        Box::new(Cube::new(center, size, base.emissive(glow)))
+    }
+
     fn push_box(&mut self, center: (f32, f32, f32), size: (f32, f32, f32), material: Material) {
         self.objects.push(Box::new(Cube::new(
             Vec3::new(center.0, center.1, center.2),

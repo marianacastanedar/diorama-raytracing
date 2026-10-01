@@ -21,6 +21,11 @@ const TILE_COLOR_B: Color = Color::from_hex(0x9A2F20);
 const STAR_CELL: f32 = 0.004;
 const STAR_DENSITY: f32 = 0.9965; // umbral del hash: más alto = menos estrellas
 const STAR_COLOR: Color = Color::new(255, 255, 240);
+// Las estrellas de verdad no tienen por qué verse más tenues, pero su
+// reflejo en el agua se veía como un cuadradito sólido y duro; bajar la
+// opacidad global las hace leer más translúcidas ahí sin tocar el reflejo
+// en sí (el agua ya mezcla por su cuenta).
+const STAR_OPACITY: f32 = 0.55;
 const MOON_RADIUS: f32 = 0.0015; // 1 - cos(radio angular) ≈ 3°, no 12° como antes
 const MOON_COLOR: Color = Color::new(230, 230, 215);
 
@@ -102,7 +107,7 @@ fn sky_background(ctx: &RenderContext, direction: &Vec3) -> Color {
     let twinkle = hash2(cell_x, cell_y);
     if twinkle > STAR_DENSITY {
         let brightness = (twinkle - STAR_DENSITY) / (1.0 - STAR_DENSITY);
-        return base + STAR_COLOR * (brightness * visibility);
+        return base + STAR_COLOR * (brightness * visibility * STAR_OPACITY);
     }
 
     base

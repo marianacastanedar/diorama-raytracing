@@ -23,7 +23,7 @@ use raytracer::{cast_ray, RenderContext};
 use scene::Scene;
 use skybox::Skybox;
 use std::f32::consts::PI;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -59,6 +59,13 @@ struct SceneView<'a> {
 /// 0.0 = día apenas empieza el programa).
 fn night_factor(time: f32) -> f32 {
     0.5 - 0.5 * (time * 2.0 * PI / NIGHT_CYCLE_SECONDS).cos()
+}
+
+/// Cubos que cambian de frame a frame: humo + la brasa de la chimenea.
+fn dynamic_objects(time: f32, night: f32) -> Vec<Box<dyn RayIntersect>> {
+    let mut objects = Scene::smoke_cubes(time);
+    objects.push(Scene::chimney_ember(time, night));
+    objects
 }
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
@@ -225,16 +232,20 @@ fn main() {
     };
     // Tecla L: prende/apaga W01 y D02 (Material::emissive). Arranca prendido.
     let lights_on = AtomicBool::new(true);
+    // Tecla N: salto manual de medio ciclo (día↔noche al toque), en
+    // milisegundos para no andar compartiendo un f32 entre hilos. Se suma al
+    // tiempo real, así que el ciclo automático sigue corriendo desde ahí.
+    let time_offset_ms = AtomicI64::new(0);
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
     let start_time = Instant::now();
-    let initial_smoke = Scene::smoke_cubes(0.0);
+    let initial_dynamic = dynamic_objects(0.0, night_factor(0.0));
     render(
         &mut framebuffer,
         &camera,
         &RenderContext {
             objects: scene.objects,
-            dynamic_objects: &initial_smoke,
+            dynamic_objects: &initial_dynamic,
             light: scene.light,
             skybox: scene.skybox,
             lights_on: true,
@@ -256,10 +267,11 @@ fn main() {
     let (frame_tx, frame_rx) = mpsc::channel::<Vec<u32>>();
     // Receiver/Sender no son Sync, así que el closure del worker tiene que
     // ser `move` (se queda dueño de camera_rx/frame_tx). Para que el loop
-    // principal pueda seguir usando `lights_on` después, le pasamos al
-    // worker una referencia (sí es Sync, AtomicBool está pensado para
-    // compartirse así) en vez de moverlo.
+    // principal pueda seguir usando `lights_on`/`time_offset_ms` después, le
+    // pasamos al worker una referencia (sí son Sync, los Atomic* están
+    // pensados para compartirse así) en vez de moverlos.
     let lights_on_ref = &lights_on;
+    let time_offset_ref = &time_offset_ms;
 
     std::thread::scope(|thread_scope| {
         thread_scope.spawn(move || {
@@ -272,15 +284,17 @@ fn main() {
                     live_camera = newer;
                 }
 
-                let time = start_time.elapsed().as_secs_f32();
-                let smoke = Scene::smoke_cubes(time);
+                let offset = time_offset_ref.load(Ordering::Relaxed) as f32 / 1000.0;
+                let time = start_time.elapsed().as_secs_f32() + offset;
+                let night = night_factor(time);
+                let dynamic = dynamic_objects(time, night);
                 let ctx = RenderContext {
                     objects: scene.objects,
-                    dynamic_objects: &smoke,
+                    dynamic_objects: &dynamic,
                     light: scene.light,
                     skybox: scene.skybox,
                     lights_on: lights_on_ref.load(Ordering::Relaxed),
-                    night_factor: night_factor(time),
+                    night_factor: night,
                 };
 
                 render(&mut worker_framebuffer, &live_camera, &ctx, LIVE_SAMPLES, LIVE_BLOCK);
@@ -296,6 +310,13 @@ fn main() {
             handle_camera_input(&rl, &mut camera, &home_camera, dt);
             if rl.is_key_pressed(KeyboardKey::KEY_L) {
                 lights_on.fetch_xor(true, Ordering::Relaxed);
+            }
+            if rl.is_key_pressed(KeyboardKey::KEY_N) {
+                // Medio ciclo para el lado contrario de donde esté ahora
+                // (día->noche o noche->día); el ciclo automático sigue
+                // andando desde ese punto.
+                let half_cycle_ms = (NIGHT_CYCLE_SECONDS * 500.0) as i64;
+                time_offset_ms.fetch_add(half_cycle_ms, Ordering::Relaxed);
             }
             let _ = camera_tx.send(camera);
 
