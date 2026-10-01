@@ -15,6 +15,15 @@ const TILE_SIZE: f32 = 0.3;
 const TILE_COLOR_A: Color = Color::from_hex(0xB33A28);
 const TILE_COLOR_B: Color = Color::from_hex(0x9A2F20);
 
+// Tamaño angular (radianes) de cada celda de la grilla de estrellas: a este
+// FOV (60°) cada pixel mide ~0.0008 rad, así que 0.004 da estrellas de
+// apenas unos pixeles en vez de los bloques gigantes de la primera prueba.
+const STAR_CELL: f32 = 0.004;
+const STAR_DENSITY: f32 = 0.9965; // umbral del hash: más alto = menos estrellas
+const STAR_COLOR: Color = Color::new(255, 255, 240);
+const MOON_RADIUS: f32 = 0.0015; // 1 - cos(radio angular) ≈ 3°, no 12° como antes
+const MOON_COLOR: Color = Color::new(230, 230, 215);
+
 /// Todo lo que necesita un rayo aparte de su origen/dirección. `objects` es
 /// la escena estática; `dynamic_objects` son los cubos que cambian cada
 /// frame (el humo animado) — van separados porque se reconstruyen en cada
@@ -54,6 +63,51 @@ fn sky(ctx: &RenderContext, direction: &Vec3) -> Color {
     ctx.skybox.sample(direction) * (1.0 - ctx.night_factor * 0.85)
 }
 
+/// Hash determinístico de dos enteros a [0, 1). No necesita ser criptográfico,
+/// solo parecer aleatorio y no repetirse en una grilla chica.
+fn hash2(x: i32, y: i32) -> f32 {
+    let mut h = (x.wrapping_mul(374_761_393) ^ y.wrapping_mul(668_265_263)) as u32;
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    h ^= h >> 16;
+    h as f32 / u32::MAX as f32
+}
+
+/// Estrellas procedurales (no vienen en el panorama HDR) y una luna: una
+/// grilla en coordenadas esféricas con un hash por celda decide si esa
+/// celda tiene estrella, y un disco fijo hace de luna. Solo se usa para el
+/// cielo "de fondo" (rayos que escapan sin golpear nada) — si se usara
+/// también para el ambient de las superficies, los puntitos de estrella se
+/// colarían como ruido en la luz difusa.
+fn sky_background(ctx: &RenderContext, direction: &Vec3) -> Color {
+    let base = sky(ctx, direction);
+
+    // Antes del atardecer ni se notarían; después de medianoche se vuelven
+    // a apagar hacia el amanecer.
+    let visibility = ((ctx.night_factor - 0.5) * 2.0).clamp(0.0, 1.0);
+    if visibility <= 0.0 {
+        return base;
+    }
+
+    // Alineada con hacia dónde mira la cámara inicial para que la luna caiga
+    // dentro de cuadro de entrada.
+    let moon_dir = Vec3::new(-0.3, 0.3, -0.9).normalize();
+    if dot(direction, &moon_dir) > 1.0 - MOON_RADIUS {
+        return base + MOON_COLOR * visibility;
+    }
+
+    let azimuth = direction.z.atan2(direction.x);
+    let elevation = direction.y.asin();
+    let cell_x = (azimuth / STAR_CELL).floor() as i32;
+    let cell_y = (elevation / STAR_CELL).floor() as i32;
+    let twinkle = hash2(cell_x, cell_y);
+    if twinkle > STAR_DENSITY {
+        let brightness = (twinkle - STAR_DENSITY) / (1.0 - STAR_DENSITY);
+        return base + STAR_COLOR * (brightness * visibility);
+    }
+
+    base
+}
+
 fn in_shadow(point: &Vec3, light_dir: &Vec3, light_distance: f32, ctx: &RenderContext) -> bool {
     let shadow_origin = point + light_dir * BIAS;
     closest_intersect(&shadow_origin, light_dir, ctx).is_some_and(|hit| hit.distance < light_distance)
@@ -85,11 +139,11 @@ fn refract(incident: &Vec3, normal: &Vec3, ior: f32) -> Vec3 {
 
 fn cast_ray_recursive(ray_origin: &Vec3, ray_direction: &Vec3, ctx: &RenderContext, depth: u32) -> Color {
     if depth >= MAX_DEPTH {
-        return sky(ctx, ray_direction);
+        return sky_background(ctx, ray_direction);
     }
 
     let Some(intersect) = closest_intersect(ray_origin, ray_direction, ctx) else {
-        return sky(ctx, ray_direction);
+        return sky_background(ctx, ray_direction);
     };
 
     let material = intersect.material;

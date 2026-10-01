@@ -37,9 +37,8 @@ const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 // escena. Es la única calidad que usamos ahora, corriendo sin parar en el
 // hilo de fondo (ver comentario en main sobre por qué el render no vive más
 // en el loop principal).
-// Un ciclo día/noche completo cada ~100 segundos: lento, de fondo, sin
-// competir con la cámara.
-const NIGHT_CYCLE_SECONDS: f32 = 100.0;
+// Un ciclo día/noche completo cada ~45 segundos.
+const NIGHT_CYCLE_SECONDS: f32 = 45.0;
 const LIVE_SAMPLES: u32 = 1;
 const LIVE_BLOCK: usize = 4;
 
