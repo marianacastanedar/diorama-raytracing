@@ -32,6 +32,8 @@ const ZOOM_SPEED: f32 = 6.0; // unidades/seg
 const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
 const PREVIEW_SAMPLES: u32 = 1; // mientras se mueve la cámara: 1 rayo/pixel
 const FINAL_SAMPLES: u32 = 2; // en reposo: supersampling 2x2 para antialiasing
+const PREVIEW_BLOCK: usize = 8; // mientras se mueve: 1 rayo cada 8x8 pixeles
+const FINAL_BLOCK: usize = 1; // en reposo: resolución completa
 
 /// Agrupa lo que necesita cada rayo aparte de la cámara: geometría, luz y
 /// fondo. Se pasan siempre juntos, así que van en un solo parámetro.
@@ -43,12 +45,20 @@ struct SceneView<'a> {
 
 fn build_scene() -> Vec<Box<dyn RayIntersect>> {
     let water = materials::water();
+    let seafloor = materials::seafloor();
 
     let mut objects = Scene::create_island_scene().objects;
     objects.push(Box::new(Plane::new(
         Vec3::new(0.0, -1.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
         water,
+    )));
+    // Para que la refracción del agua tenga algo sólido contra qué terminar
+    // en vez de escapar al skybox mirando hacia el nadir (ver materials::seafloor).
+    objects.push(Box::new(Plane::new(
+        Vec3::new(0.0, -3.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        seafloor,
     )));
     objects
 }
@@ -95,9 +105,13 @@ fn sample_pixel(
 }
 
 /// Traza la escena y llena el framebuffer, repartiendo filas entre los
-/// núcleos disponibles: en single-thread cada frame tarda ~200ms, suficiente
-/// para que mover la cámara se sienta trabado.
-fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, samples: u32) {
+/// núcleos disponibles.
+///
+/// `block_size` > 1 sacrifica resolución por velocidad: calcula un solo rayo
+/// cada `block_size`x`block_size` pixeles y repite ese color en el resto del
+/// bloque (como el preview de baja resolución al mover la cámara en un motor
+/// de juego). Con 1 hace el render a resolución completa.
+fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, samples: u32, block_size: usize) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
 
@@ -111,12 +125,26 @@ fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, sam
             let base_y = chunk_index * rows_per_chunk;
 
             scope.spawn(move || {
+                // Última fila calculada de verdad, reutilizada en las filas
+                // intermedias de cada bloque. Se recalcula en la primera fila
+                // del chunk (row == 0) para no arrastrar franjas negras entre
+                // los rangos de filas de cada hilo.
+                let mut key_row = vec![0u32; WIDTH];
+
                 for (row, pixels) in chunk.chunks_mut(WIDTH).enumerate() {
                     let y = base_y + row;
 
-                    for (x, pixel) in pixels.iter_mut().enumerate() {
-                        *pixel = sample_pixel(x, y, samples, aspect_ratio, tan_fov, camera, scene);
+                    if row % block_size == 0 {
+                        let mut x = 0;
+                        while x < WIDTH {
+                            let color = sample_pixel(x, y, samples, aspect_ratio, tan_fov, camera, scene);
+                            let end = (x + block_size).min(WIDTH);
+                            key_row[x..end].fill(color);
+                            x = end;
+                        }
                     }
+
+                    pixels.copy_from_slice(&key_row);
                 }
             });
         }
@@ -173,8 +201,8 @@ fn main() {
     rl.set_target_fps(60);
 
     let home_camera = Camera::new(
-        Vec3::new(7.0, 6.0, 9.0),
-        Vec3::new(-1.0, 0.0, 0.0),
+        Vec3::new(-0.2, 4.3, 7.8),
+        Vec3::new(-0.5, 0.3, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
     );
     let mut camera = Camera::new(home_camera.eye, home_camera.center, home_camera.up);
@@ -188,7 +216,7 @@ fn main() {
     };
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES);
+    render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES, FINAL_BLOCK);
     let mut was_moving = false;
 
     while !rl.window_should_close() {
@@ -196,11 +224,11 @@ fn main() {
         let moving = handle_camera_input(&rl, &mut camera, &home_camera, dt);
 
         if moving {
-            // Preview rápido mientras se mueve la cámara.
-            render(&mut framebuffer, &camera, &scene, PREVIEW_SAMPLES);
+            // Preview rápido y en bloques mientras se mueve la cámara.
+            render(&mut framebuffer, &camera, &scene, PREVIEW_SAMPLES, PREVIEW_BLOCK);
         } else if was_moving {
-            // Se acaba de soltar: una pasada final con antialiasing.
-            render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES);
+            // Se acaba de soltar: una pasada final a resolución completa con antialiasing.
+            render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES, FINAL_BLOCK);
         }
         was_moving = moving;
 
