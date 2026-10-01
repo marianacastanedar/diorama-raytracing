@@ -23,6 +23,7 @@ use raytracer::cast_ray;
 use scene::Scene;
 use skybox::Skybox;
 use std::f32::consts::PI;
+use std::sync::mpsc;
 
 const WIDTH: usize = 1280;
 const HEIGHT: usize = 720;
@@ -30,13 +31,18 @@ const FOV: f32 = PI / 3.0;
 const ORBIT_SPEED: f32 = 1.6; // rad/seg
 const ZOOM_SPEED: f32 = 6.0; // unidades/seg
 const SKYBOX_PATH: &str = "assets/skybox/kiara_1_dawn_2k.hdr";
-const PREVIEW_SAMPLES: u32 = 1; // mientras se mueve la cámara: 1 rayo/pixel
-const FINAL_SAMPLES: u32 = 2; // en reposo: supersampling 2x2 para antialiasing
-const PREVIEW_BLOCK: usize = 8; // mientras se mueve: 1 rayo cada 8x8 pixeles
-const FINAL_BLOCK: usize = 1; // en reposo: resolución completa
+// 1 rayo cada 4x4 pixeles, sin antialiasing: ~70ms/frame en un i7 con esta
+// escena. Es la única calidad que usamos ahora, corriendo sin parar en el
+// hilo de fondo (ver comentario en main sobre por qué el render no vive más
+// en el loop principal).
+const LIVE_SAMPLES: u32 = 1;
+const LIVE_BLOCK: usize = 4;
 
 /// Agrupa lo que necesita cada rayo aparte de la cámara: geometría, luz y
-/// fondo. Se pasan siempre juntos, así que van en un solo parámetro.
+/// fondo. Se pasan siempre juntos, así que van en un solo parámetro. Son
+/// todas referencias (Copy), así que el worker se queda con su propia copia
+/// del struct sin tener que clonar la escena.
+#[derive(Clone, Copy)]
 struct SceneView<'a> {
     objects: &'a [Box<dyn RayIntersect>],
     light: &'a Light,
@@ -109,8 +115,7 @@ fn sample_pixel(
 ///
 /// `block_size` > 1 sacrifica resolución por velocidad: calcula un solo rayo
 /// cada `block_size`x`block_size` pixeles y repite ese color en el resto del
-/// bloque (como el preview de baja resolución al mover la cámara en un motor
-/// de juego). Con 1 hace el render a resolución completa.
+/// bloque. Con 1 hace el render a resolución completa.
 fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, samples: u32, block_size: usize) {
     let aspect_ratio = WIDTH as f32 / HEIGHT as f32;
     let tan_fov = (FOV / 2.0).tan();
@@ -151,45 +156,34 @@ fn render(framebuffer: &mut Framebuffer, camera: &Camera, scene: &SceneView, sam
     });
 }
 
-/// Aplica input de flechas (orbita), +/- (zoom) y R (reset). Devuelve true si
-/// la cámara cambió, para no re-trazar la escena cuando el usuario no toca nada.
-fn handle_camera_input(rl: &raylib::RaylibHandle, camera: &mut Camera, home: &Camera, dt: f32) -> bool {
-    let mut changed = false;
+/// Aplica input de flechas (orbita), +/- (zoom) y R (reset).
+fn handle_camera_input(rl: &raylib::RaylibHandle, camera: &mut Camera, home: &Camera, dt: f32) {
     let orbit_step = ORBIT_SPEED * dt;
     let zoom_step = ZOOM_SPEED * dt;
 
     if rl.is_key_down(KeyboardKey::KEY_RIGHT) {
         camera.orbit(orbit_step, 0.0);
-        changed = true;
     }
     if rl.is_key_down(KeyboardKey::KEY_LEFT) {
         camera.orbit(-orbit_step, 0.0);
-        changed = true;
     }
     if rl.is_key_down(KeyboardKey::KEY_UP) {
         camera.orbit(0.0, -orbit_step);
-        changed = true;
     }
     if rl.is_key_down(KeyboardKey::KEY_DOWN) {
         camera.orbit(0.0, orbit_step);
-        changed = true;
     }
     if rl.is_key_down(KeyboardKey::KEY_EQUAL) || rl.is_key_down(KeyboardKey::KEY_KP_ADD) {
         camera.zoom(-zoom_step);
-        changed = true;
     }
     if rl.is_key_down(KeyboardKey::KEY_MINUS) || rl.is_key_down(KeyboardKey::KEY_KP_SUBTRACT) {
         camera.zoom(zoom_step);
-        changed = true;
     }
     if rl.is_key_pressed(KeyboardKey::KEY_R) {
         camera.eye = home.eye;
         camera.center = home.center;
         camera.up = home.up;
-        changed = true;
     }
-
-    changed
 }
 
 fn main() {
@@ -216,33 +210,66 @@ fn main() {
     };
 
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
-    render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES, FINAL_BLOCK);
-    let mut was_moving = false;
+    render(&mut framebuffer, &camera, &scene, LIVE_SAMPLES, LIVE_BLOCK);
 
-    while !rl.window_should_close() {
-        let dt = rl.get_frame_time();
-        let moving = handle_camera_input(&rl, &mut camera, &home_camera, dt);
+    // El render (incluso en bloques) puede tardar más que un frame de
+    // ventana, y con animaciones corriendo hace falta re-trazar todo el
+    // tiempo, no solo cuando se mueve la cámara. Si lo hiciéramos en el loop
+    // principal, la ventana se congelaría cada vez que tarda. Por eso corre
+    // en un hilo aparte que nunca deja de renderizar: el loop principal solo
+    // manda la cámara actual y pinta el último frame que haya llegado, así
+    // que la ventana siempre responde a los 60 FPS de raylib sin importar
+    // cuánto tarde un frame del raytracer.
+    let (camera_tx, camera_rx) = mpsc::channel::<Camera>();
+    let (frame_tx, frame_rx) = mpsc::channel::<Vec<u32>>();
 
-        if moving {
-            // Preview rápido y en bloques mientras se mueve la cámara.
-            render(&mut framebuffer, &camera, &scene, PREVIEW_SAMPLES, PREVIEW_BLOCK);
-        } else if was_moving {
-            // Se acaba de soltar: una pasada final a resolución completa con antialiasing.
-            render(&mut framebuffer, &camera, &scene, FINAL_SAMPLES, FINAL_BLOCK);
-        }
-        was_moving = moving;
+    std::thread::scope(|thread_scope| {
+        thread_scope.spawn(move || {
+            let mut worker_framebuffer = Framebuffer::new(WIDTH, HEIGHT);
 
-        let mut d = rl.begin_drawing(&thread);
-        d.clear_background(raylib::color::Color::BLACK);
+            while let Ok(mut live_camera) = camera_rx.recv() {
+                // Si se acumularon varias cámaras mientras renderizábamos,
+                // solo nos importa la más reciente.
+                while let Ok(newer) = camera_rx.try_recv() {
+                    live_camera = newer;
+                }
 
-        for y in 0..HEIGHT {
-            for x in 0..WIDTH {
-                let hex = framebuffer.buffer[y * WIDTH + x];
-                let r = ((hex >> 16) & 0xFF) as u8;
-                let g = ((hex >> 8) & 0xFF) as u8;
-                let b = (hex & 0xFF) as u8;
-                d.draw_pixel(x as i32, y as i32, raylib::color::Color::new(r, g, b, 255));
+                render(&mut worker_framebuffer, &live_camera, &scene, LIVE_SAMPLES, LIVE_BLOCK);
+
+                if frame_tx.send(worker_framebuffer.buffer.clone()).is_err() {
+                    break;
+                }
+            }
+        });
+
+        while !rl.window_should_close() {
+            let dt = rl.get_frame_time();
+            handle_camera_input(&rl, &mut camera, &home_camera, dt);
+            let _ = camera_tx.send(camera);
+
+            if let Ok(mut latest) = frame_rx.try_recv() {
+                while let Ok(newer) = frame_rx.try_recv() {
+                    latest = newer;
+                }
+                framebuffer.buffer = latest;
+            }
+
+            let mut d = rl.begin_drawing(&thread);
+            d.clear_background(raylib::color::Color::BLACK);
+
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let hex = framebuffer.buffer[y * WIDTH + x];
+                    let r = ((hex >> 16) & 0xFF) as u8;
+                    let g = ((hex >> 8) & 0xFF) as u8;
+                    let b = (hex & 0xFF) as u8;
+                    d.draw_pixel(x as i32, y as i32, raylib::color::Color::new(r, g, b, 255));
+                }
             }
         }
-    }
+
+        // Cierra el canal para que el worker salga de su loop y el scope
+        // pueda esperar a que termine antes de volver de main().
+        drop(camera_tx);
+    });
 }

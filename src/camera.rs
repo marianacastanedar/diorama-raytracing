@@ -5,6 +5,7 @@ const PITCH_LIMIT: f32 = PI / 2.0 - 0.1;
 const MIN_RADIUS: f32 = 2.0;
 const MAX_RADIUS: f32 = 25.0;
 
+#[derive(Clone, Copy)]
 pub struct Camera {
     pub eye: Vec3,
     pub center: Vec3,
