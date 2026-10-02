@@ -60,4 +60,4 @@ fondo.
 
 ## Video demo
 
-[Pendiente: agregar link o embed]
+https://youtu.be/mDZAxyLPRcQ
